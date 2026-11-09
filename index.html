@@ -318,17 +318,24 @@ const bossName=()=>BOSSN[((Math.floor(stage/5)-1)%4+4)%4];
 const ECOL=['#f55','#fa4','#4d6','#6bf'];
 function setBanner(t,s){bannerT=t;bannerS=s;banner=3.2}
 
-var xpEma=.8,xpAcc=0,xpTm=0,lvlAt=0;
+var xpEma=1.5,xpAcc=0,xpTm=0,lvlAt=0;
 // Level temposu: bir sonraki level için hedef süre (sn). L1≈32sn, L10≈50sn, L30≈90sn, L50≈130sn
-function lvlTarget(L){return (30+2*L)/(MOD.xp||1)}
+function lvlTarget(L){return (L<=3?25:Math.min(80,42+L*1.5))/(MOD.xp||1)}
 // Gereken XP = son ~12 sn'deki ortalama XP kazanımı × hedef süre (güçlü oyuncu da, zayıf oyuncu da aynı ritmi yaşar)
+function minGap(){return lvlTarget(P.lvl)}
+// ===== DİREKTÖR (belge: Oyun Algoritması) =====
+const CUM=[0];(function(){for(let L=1;L<=300;L++)CUM[L]=CUM[L-1]+(L<=3?25:Math.min(80,42+1.5*L))})();
+function Dof(t){let L=1;while(L<300&&CUM[L]<=t)L++;return L+(t-CUM[L-1])/(CUM[L]-CUM[L-1])}
+function rhythm(t){const m=t%60;return m<40?1:m<52?1.15:.55}
+var Dc=1,hpEma=1;
+function adapt(){return (daily||AR)?1:Math.max(.75,Math.min(1.08,1.08-.6*(1-hpEma)))}
 function calcNeed(){return Math.max(8,Math.round(xpEma*lvlTarget(P.lvl)))}
 function reset(){
   const c=daily?CH.ok:(CH[S.char]||CH.ok);const M=daily?{hp:0,dmg:0,spd:0,gain:0,rev:0}:S.meta;MOD=daily?MODS[utcDay()%MODS.length]:MODL;
   const mh=(100+M.hp*20)*c.hp*(MOD.hp||1);
   P={x:0,y:0,hp:mh,max:mh,spd:150*(1+.05*M.spd)*c.spd,lvl:1,xp:0,need:15,dmg:10*(1+.1*M.dmg)*c.dmg*(MOD.dmg||1),rate:.6,cd:0,multi:c.multi,pierce:c.pierce,range:260,magnet:60,regen:0,lx:1,ly:0,dsh:0,dc:0,dcd:c.dcd||2,inv:0,rev:Math.min(2,M.rev||0),orb:c.orb,oa:0,up:{},evo:{},lc:0};
   E=[];B=[];G=[];EB=[];PU=[];parts=[];bolts=[];chests=[];traps=[];
-  xpEma=.8;xpAcc=0;xpTm=0;lvlAt=0;T=0;spawnT=0;kills=0;shake=0;stage=1;combo=0;ct=0;runGold=0;chestT=18;trapT=6;
+  xpEma=1.5;xpAcc=0;xpTm=0;lvlAt=0;T=0;spawnT=0;kills=0;shake=0;stage=1;Dc=1;hpEma=1;combo=0;ct=0;runGold=0;chestT=18;trapT=6;
   setBanner('LEVEL 1',daily?'📅 GÜNLÜK: '+MOD.n+' • '+MOD.d:'Yeşil kareleri topla, hayatta kal!');
 }
 
@@ -367,10 +374,10 @@ function spawn(){
   const a=R()*6.283,r=Math.max(W,H)*.6+40;
   const q=R();let ty=0;
   if(stage>=5&&q<.15)ty=2;else if(stage>=3&&q<.35)ty=1;
-  const big=ty===0&&R()<Math.min(.3,(stage-1)*.04);
+  const big=ty===0&&R()<Math.min(.3,(Dc-1)*.04);
   const k=ty===1?{h:.5,s:1.9,r:8,c:'#fa3'}:ty===2?{h:1.2,s:.7,r:11,c:'#a6f'}:{h:1,s:1,r:big?18:10,c:big?'#f3a':ECOL[bi()]};
-  const hp=(big?6:1)*k.h*(8+(stage-1)*4)*(1+(stage-1)*.08)*dmul();
-  const sp=((big?50:55+R()*25)+Math.min(70,(stage-1)*6))*k.s*(MOD.spd||1);
+  const hp=(big?6:1)*k.h*(8+(Dc-1)*4)*(1+(Dc-1)*.08)*dmul();
+  const sp=((big?50:55+R()*25)+Math.min(70,(Dc-1)*6))*k.s*(MOD.spd||1);
   E.push({x:P.x+Math.cos(a)*r,y:P.y+Math.sin(a)*r,hp:hp,max:hp,sp:sp,r:k.r,dmg:big?18:8,big:big,ty:ty,c:k.c,fc:2});
 }
 function spawnBoss(){
@@ -408,8 +415,11 @@ function update(dt){
     P.lc=1.4;const tg=nearest(5,380);
     if(tg.length){let px=P.x,py=P.y;for(const e of tg){e.hp-=P.dmg*2;bolts.push({x1:px,y1:py,x2:e.x,y2:e.y,l:.25});px=e.x;py=e.y}sfx('zap')}
   }
+  // zorluk zamandan
+  Dc=Dof(T);hpEma+=((P.hp/P.max)-hpEma)*Math.min(1,dt/10);
+  {const ns=Math.floor(Dc);if(ns>stage){stage=ns;if(stage%5===0)spawnBoss()}}
   // düşman doğuşu
-  spawnT-=dt;const rate=Math.max(.1,1.1-(stage-1)*.03)*(MOD.rate||1)/dmul()*((T%60)>52?1.8:1);
+  spawnT-=dt;const rate=Math.max(.1,1.1-(Dc-1)*.03)*(MOD.rate||1)/(dmul()*rhythm(T)*adapt());
   while(spawnT<=0){if(E.length<160){spawn();if(stage>=8&&R()<.5)spawn()}spawnT+=rate}
   // sandık
   chestT-=dt;
@@ -501,7 +511,8 @@ function update(dt){
   bolts=bolts.filter(b=>b.l>0);
   shake*=.9;
   xpTm+=dt;if(xpTm>=1){xpTm-=1;xpEma=xpEma*.92+xpAcc*.08;xpAcc=0;P.need=calcNeed()}
-  if(P.xp>=P.need&&T-lvlAt>=8){lvlAt=T;P.xp-=P.need;P.lvl++;stage=P.lvl;if(stage%5===0)spawnBoss();P.need=calcNeed();P.xp=Math.min(P.xp,P.need*.4);levelUp()}
+  if(P.xp>P.need)P.xp=P.need;
+  if(P.xp>=P.need&&T-lvlAt>=minGap()){lvlAt=T;P.xp-=P.need;P.lvl++;P.need=calcNeed();P.xp=Math.min(P.xp,P.need*.25);levelUp()}
   if(P.hp<=0){
     if(P.rev>0){P.rev--;P.hp=P.max*.5;P.inv=2;for(const e of E)if(!e.boss&&Math.hypot(e.x-P.x,e.y-P.y)<220)e.hp=0;setBanner('DİRİLDİN!','Kalan diriliş hakkı: '+P.rev);sfx('lvl');vib(100)}
     else gameOver();
@@ -523,7 +534,7 @@ function levelUp(){
       const ev=checkEvo();
       P.hp=Math.min(P.max,P.hp+P.max*.3);
       if(ev){setBanner('EVRİM!',ev);sfx('lvl');vib(80)}
-      else setBanner('LEVEL '+stage,stage%5===0?'⚠ BOSS: '+bossName()+'!  Canın %30 yenilendi':'Düşmanlar güçlendi, canın %30 yenilendi');
+      else setBanner('LEVEL '+P.lvl,'Canın %30 yenilendi');
       $('levelup').classList.add('hide');state='play';last=performance.now();P.inv=Math.max(P.inv,1.5);
     };
     o.appendChild(b);o.appendChild(document.createElement('br'));
@@ -609,8 +620,8 @@ function draw(){
   }
   drawArena();
   if(state==='pause'){ctx.fillStyle='rgba(0,0,0,.5)';ctx.fillRect(0,0,W,H);ctx.fillStyle='#fff';ctx.font='bold 36px system-ui';ctx.textAlign='center';ctx.fillText('DURAKLATILDI',W/2,H/2)}
-  $('bar').style.width=(P.xp/P.need*100)+'%';
-  $('hud').textContent=(daily?'📅 ':'')+'Level '+stage+'  •  Sn '+Math.floor(T)+'  •  ☠ '+kills+'  •  Rekor '+S.best+(combo>=3?'  •  🔥x'+combo:'')+'  •  🪙 '+runGold+(P.rev?'  •  💖'+P.rev:'');
+  $('bar').style.width=(Math.min(1,P.xp/P.need,(T-lvlAt)/minGap())*100)+'%';
+  $('hud').textContent=(daily?'📅 ':'')+'Level '+P.lvl+'  •  ⚠'+stage+'  •  Sn '+Math.floor(T)+'  •  ☠ '+kills+'  •  Rekor '+S.best+(combo>=3?'  •  🔥x'+combo:'')+'  •  🪙 '+runGold+(P.rev?'  •  💖'+P.rev:'');
   $('dashb').textContent=P.dc<=0?'⚡':Math.ceil(P.dc);
   $('dashb').style.opacity=P.dc<=0?1:.45;
 }
@@ -992,7 +1003,7 @@ function refreshResume(){
 function resumeRun(){
   const d=getRun();if(!d)return;
   start(false);
-  Object.assign(P,d.P);xpEma=Math.max(.5,P.need/lvlTarget(P.lvl));T=d.T;lvlAt=d.T;kills=d.kills;stage=d.stage;runGold=d.runGold;
+  Object.assign(P,d.P);xpEma=Math.max(.5,P.need/lvlTarget(P.lvl));T=d.T;lvlAt=d.T;kills=d.kills;Dc=Dof(T);stage=Math.floor(Dc);runGold=d.runGold;
   P.inv=3;P.hp=Math.max(P.hp,P.max*.5);
   setBanner('▶ DEVAM','Kaldığın yerden devam ediyorsun');
 }
