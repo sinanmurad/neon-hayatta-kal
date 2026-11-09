@@ -44,6 +44,7 @@ input{font-size:16px;padding:9px;border-radius:10px;border:2px solid #345;backgr
     <div style="font-size:14px;opacity:.85">PC: WASD / Oklar, <b>Boşluk = atılma</b><br>Telefon: sürükle, <b>⚡ butonu = atılma</b><br>Ateş otomatik. Yeşil kareleri topla, level atla, evrim geçir!</div>
     <button id="start">OYNA</button>
     <button id="dbtn">📅 GÜNLÜK MEYDAN OKUMA<small>Herkese aynı kurallar • sıralamaya gir</small></button>
+    <button id="arbtn">⚔️ ARENA<small>2–1000 kişi • kupa kazan • ödül havuzu • sabotaj</small></button>
     <div class="g2">
       <button id="lbtn">🌍 SKOR TABLOSU</button>
       <button id="qbtn">📋 GÖREVLER</button>
@@ -57,6 +58,7 @@ input{font-size:16px;padding:9px;border-radius:10px;border:2px solid #345;backgr
     <div id="net" style="font-size:12px;opacity:.7"></div>
   </div>
   <div id="sub" class="panel hide"><h1 id="subt"></h1><div id="subb" class="sb"></div><button id="subback">GERİ</button></div>
+  <div id="arena" class="panel hide"></div>
   <div id="levelup" class="panel hide"><h1 id="lvt">LEVEL 2</h1><div>Bir güçlendirme seç, kalıcı olarak sende kalır.</div><div id="opts"></div></div>
   <div id="over" class="panel hide"><h1>ÖLDÜN</h1><div id="stats"></div><button id="again">TEKRAR</button><button id="tomenu">MENÜ / GÖREVLER / DÜKKAN</button></div>
 </div>
@@ -225,7 +227,7 @@ cv.addEventListener('pointerup',up);cv.addEventListener('pointercancel',up);
 $('dashb').addEventListener('pointerdown',e=>{e.preventDefault();wantDash=1});
 $('pauseb').addEventListener('pointerdown',e=>{e.preventDefault();togglePause()});
 function togglePause(){if(state==='play'){state='pause';$('pauseb').textContent='▶'}else if(state==='pause'){state='play';last=performance.now();$('pauseb').textContent='⏸'}}
-document.addEventListener('visibilitychange',()=>{if(document.hidden&&state==='play')togglePause()});
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&state==='play'&&!(typeof AR!=='undefined'&&AR&&AR.started))togglePause()});
 
 // ================= OYUN DURUMU =================
 let P,E,B,G,EB,PU,parts,bolts,chests,traps,T,state='menu',last=0,spawnT,kills,shake,stage,banner=0,bannerT='',bannerS='',combo,ct,wantDash=0,runGold,chestT,trapT;
@@ -444,6 +446,7 @@ function levelUp(){
 }
 
 function gameOver(){
+  if(AR&&AR.started&&!AR.claimed){arenaDeath();return}
   state='over';sfx('die');vib(200);$('dashb').classList.add('hide');$('pauseb').classList.add('hide');
   const s=Math.floor(T);
   const earned=Math.floor(((T/5+kills/2)*(1+.15*S.meta.gain)+runGold)*(MOD.gold||1));
@@ -510,6 +513,7 @@ function draw(){
     ctx.font='17px system-ui';ctx.fillText(bannerS,W/2,H*.3+30);
     ctx.shadowBlur=0;ctx.globalAlpha=1;
   }
+  drawArena();
   if(state==='pause'){ctx.fillStyle='rgba(0,0,0,.5)';ctx.fillRect(0,0,W,H);ctx.fillStyle='#fff';ctx.font='bold 36px system-ui';ctx.textAlign='center';ctx.fillText('DURAKLATILDI',W/2,H/2)}
   $('bar').style.width=(P.xp/P.need*100)+'%';
   $('hud').textContent=(daily?'📅 ':'')+'Level '+stage+'  •  Sn '+Math.floor(T)+'  •  ☠ '+kills+'  •  Rekor '+S.best+(combo>=3?'  •  🔥x'+combo:'')+'  •  🪙 '+runGold+(P.rev?'  •  💖'+P.rev:'');
@@ -727,22 +731,150 @@ async function accountPanel(){
   });
 }
 
-function start(isDaily){
-  daily=!!isDaily;if(daily)seedRng(utcDay());else R=Math.random;
+function start(isDaily,seed){
+  daily=!!isDaily;if(daily)seedRng(seed==null?utcDay():seed);else R=Math.random;
   reset();ac();
   state='play';
-  ['menu','over','levelup','sub'].forEach(i=>$(i).classList.add('hide'));
+  ['menu','over','levelup','sub','arena'].forEach(i=>$(i).classList.add('hide'));
   $('dashb').classList.remove('hide');$('pauseb').classList.remove('hide');$('pauseb').textContent='⏸';
   musicStart();
   last=performance.now();
 }
+
+// ================= ARENA =================
+const FEE=50;let AR=null,TROPH=0;
+const LEAGUES=[[0,'🥉 Bronz'],[100,'🥈 Gümüş'],[300,'🥇 Altın'],[600,'💎 Elmas'],[1000,'👑 Efsane']];
+function league(t){let l=LEAGUES[0][1];for(const x of LEAGUES)if(t>=x[0])l=x[1];return l}
+function setPend(r){try{if(r)localStorage.setItem('nhk_pend',JSON.stringify({r:r,t:Date.now()}));else localStorage.removeItem('nhk_pend')}catch(e){}}
+async function checkPend(){
+  let p=null;try{p=JSON.parse(localStorage.getItem('nhk_pend')||'null')}catch(e){}
+  if(!p||AR)return;
+  if(Date.now()-p.t>20*60000){setPend(null);return}
+  try{
+    const c=await rpc('arena_claim',{p_id:ID.id,p_token:ID.token,p_room:p.r});
+    if(c&&c.ready){setPend(null);if(!c.already){S.gold+=c.coins;TROPH=c.trophies;save();toast('⚔️ Arena sonucu: #'+c.rank+' • '+(c.coins?'+'+c.coins+' 🪙 ':'')+(c.trophy_delta>=0?'+':'')+c.trophy_delta+' 🏆')}}
+  }catch(e){}
+}
+async function arenaMenu(){
+  let tr=TROPH;
+  try{await ensurePlayer();tr=(await rpc('get_trophies',{p_id:ID.id,p_token:ID.token}))||0;TROPH=tr;online=true}catch(e){online=false}
+  sub('⚔️ ARENA',b=>{
+    row(b,league(tr)+' • 🏆 <b>'+tr+'</b> kupa<small>Giriş ücreti: '+FEE+' 🪙 • Altının: '+S.gold+'</small>');
+    row(b,'<b>Nasıl çalışır?</b><small>Herkes aynı anda, herkes eşit güçle (dükkan bonusu yok) 2,5 dk oynar. Skor = öldürme + level + süre.<br>🏆 Kazanan havuzu ve kupayı alır. Alt sıralar kupa kaybeder, giriş ücreti yanar.<br>⚡ Her 25 öldürmede sabotaj hakkı: tam üstündeki rakibe düşman sürüsü gider. Lider hep hedeftir, geride kalan şansını bulur.<br>🤖 Rakip çıkmazsa botlar dolar: antrenman olur, ücret iade, kupa kaybı yok.</small>');
+    if(!online){row(b,'📴 Arena için internet gerekli');}
+    [[2,'Düello','Kazanan havuzun tamamını alır'],[4,'4 kişi','İlk 3 havuzu paylaşır'],[10,'10 kişi','İlk 3 havuzu paylaşır'],[100,'100 kişi','Büyük savaş • 45 sn eşleşme'],[1000,'1000 kişi','Mega turnuva • 90 sn eşleşme']].forEach(x=>
+      btn(b,'⚔️ '+x[1].toUpperCase()+'<small>'+x[2]+'</small>',()=>arenaJoin(x[0]),S.gold<FEE||!online));
+    btn(b,'🏆 KUPA SIRALAMASI',arenaBoard);
+  });
+}
+async function arenaBoard(){
+  let lb=[];try{lb=await rpc('get_arena_board',{p_id:ID.id})||[]}catch(e){}
+  sub('🏆 KUPA SIRALAMASI',b=>{
+    if(!lb.length)row(b,'Henüz kimse kupa kazanmadı. İlk sen ol!');
+    lb.forEach((x,i)=>row(b,'<b>#'+(i+1)+'</b> '+esc(x.name)+' <small>'+league(x.trophies)+' • 🏆 '+x.trophies+'</small>',x.is_me?'done':''));
+    btn(b,'GERİ',arenaMenu);
+  });
+}
+async function arenaJoin(n){
+  if(!online){toast('Arena için internet gerekli');return}
+  if(S.gold<FEE){toast('Yetersiz altın');return}
+  let r;
+  try{await ensurePlayer();r=await rpc('arena_join',{p_id:ID.id,p_token:ID.token,p_size:n})}catch(e){toast('Bağlanamadı, tekrar dene');return}
+  if(r.fresh){S.gold-=FEE;save()}
+  setPend(r.room);
+  AR={room:r.room,size:n,seed:0,dur:150,sabSeen:0,sabOut:0,st:null,stAt:0,started:false,dead:false,claimed:false,t:0,busy:false};
+  $('sub').classList.add('hide');$('menu').classList.add('hide');
+  renderArena('<h1>⚔️ EŞLEŞME</h1><div>Rakipler aranıyor…</div>');
+  arenaPoll();
+}
+function renderArena(html){const a=$('arena');a.innerHTML=html;a.classList.remove('hide')}
+function boardHtml(pl){
+  return '<div class="sb">'+(pl||[]).map(p=>'<div class="row'+(p.me?' done':'')+'" style="min-width:250px">#'+p.rank+' '+esc(p.name)+(p.alive?'':' ☠')+'<small>skor '+p.score+'</small></div>').join('')+'</div>';
+}
+function arenaScore(){
+  if(!AR||!AR.started||!P)return{score:0,lvl:1,kills:0,alive:true,sab:0};
+  return{score:kills*10+P.lvl*50+Math.floor(T)*2,lvl:P.lvl,kills:kills,alive:!AR.dead,sab:Math.floor(kills/25)};
+}
+async function arenaPoll(){
+  const A=AR;if(!A||A.claimed||A.busy)return;
+  A.busy=true;clearTimeout(A.t);
+  try{
+    const sc=arenaScore();
+    const s=await rpc('arena_state',{p_id:ID.id,p_token:ID.token,p_room:A.room,p_score:sc.score,p_level:sc.lvl,p_kills:sc.kills,p_alive:sc.alive,p_sab:sc.sab});
+    if(AR!==A)return;
+    A.st=s;A.stAt=performance.now();
+    if(s.status==='none'){setPend(null);AR=null;toast('Maç bulunamadı');showMenu();$('arena').classList.add('hide');return}
+    if(s.status==='wait'){
+      renderArena('<h1>⚔️ EŞLEŞME</h1><div>Oyuncu: <b>'+s.humans+'</b> / '+s.size+'</div><div>Başlamasına: <b>'+s.wait_left+'</b> sn</div><small>Rakip yetmezse botlar katılır</small>');
+    }else if(s.status==='play'&&!A.started){
+      A.started=true;A.seed=s.seed;A.dur=s.dur;
+      const wait=Math.max(0,(s.start_in||0)*1000);
+      renderArena('<h1>⚔️ BAŞLIYOR</h1><div>'+s.n+' kişilik maç</div>');
+      setTimeout(()=>{if(AR===A&&!A.claimed&&!A.dead){start(true,A.seed);$('arena').classList.add('hide');$('pauseb').classList.add('hide');setBanner('⚔️ ARENA','Hayatta kal, sırala, sabote et!')}},wait);
+    }
+    if(A.started&&s.sab_in>A.sabSeen){const k=Math.min(6,s.sab_in-A.sabSeen);A.sabSeen=s.sab_in;if(state==='play')swarm(k)}
+    if(s.sab_sent>A.sabOut){A.sabOut=s.sab_sent;if(state==='play')toast('⚡ Sabotaj gönderildi!')}
+    if(s.status==='done'){A.busy=false;await arenaFinish();return}
+    if(A.dead)renderArena('<h1>☠ ELENDİN</h1><div>Sıran şu an: <b>#'+s.rank+'</b> / '+s.n+'</div>'+boardHtml(s.players)+'<small>Maç bitince ödüller hesaplanır • '+Math.ceil(s.play_left)+' sn</small>');
+  }catch(e){}
+  A.busy=false;
+  if(AR===A&&!A.claimed)A.t=setTimeout(arenaPoll,(A.size>100?6000:A.size>10?4000:2000));
+}
+function swarm(k){
+  setBanner('💀 SABOTAJ!','Rakip sana sürü gönderdi');sfx('boss');vib(150);
+  for(let i=0;i<8*k;i++)spawn();
+}
+function arenaDeath(){
+  AR.dead=true;state='arenadead';sfx('die');vib(200);
+  $('dashb').classList.add('hide');$('pauseb').classList.add('hide');
+  renderArena('<h1>☠ ELENDİN</h1><div>Sonuç bekleniyor…</div>');
+  AR.busy=false;arenaPoll();
+}
+async function arenaFinish(){
+  const A=AR;clearTimeout(A.t);
+  if(state==='play'||state==='levelup'||state==='pause'){state='arenadead';$('levelup').classList.add('hide');$('dashb').classList.add('hide');$('pauseb').classList.add('hide')}
+  renderArena('<h1>🏁 MAÇ BİTTİ</h1><div>Sonuç hesaplanıyor…</div>');
+  for(let i=0;i<5;i++){
+    try{
+      const c=await rpc('arena_claim',{p_id:ID.id,p_token:ID.token,p_room:A.room});
+      if(c&&c.ready){
+        A.claimed=true;setPend(null);
+        if(!c.already){S.gold+=c.coins;TROPH=c.trophies;save()}
+        const win=c.rank===1;
+        renderArena('<h1>'+(win?'🏆 KAZANDIN!':'#'+c.rank+' / '+c.n)+'</h1>'
+          +'<div>'+(c.practice?'Antrenman maçı (botlarla)':c.humans+' gerçek oyuncu')+'</div>'
+          +'<div>🪙 <b>'+(c.coins?'+'+c.coins:'0')+'</b> ('+(c.practice?'ücret iade':'giriş ücreti '+FEE+' yandı')+')</div>'
+          +'<div>🏆 <b>'+(c.trophy_delta>=0?'+':'')+c.trophy_delta+'</b> kupa → '+(c.trophies||0)+' • '+league(c.trophies||0)+'</div>'
+          +boardHtml(c.players)
+          +'<button id="arAgain">⚔️ TEKRAR ARENA</button><button id="arMenu">MENÜ</button>');
+        $('arAgain').onclick=()=>{AR=null;daily=false;state='menu';$('arena').classList.add('hide');showMenu();arenaMenu()};
+        $('arMenu').onclick=()=>{AR=null;daily=false;state='menu';$('arena').classList.add('hide');showMenu()};
+        return;
+      }
+    }catch(e){}
+    await new Promise(r=>setTimeout(r,1500));
+  }
+  renderArena('<h1>🏁 MAÇ BİTTİ</h1><div>Sonuç alınamadı, menüye dönünce otomatik tekrar denenecek.</div><button id="arMenu">MENÜ</button>');
+  $('arMenu').onclick=()=>{AR=null;daily=false;state='menu';$('arena').classList.add('hide');showMenu();checkPend()};
+}
+function drawArena(){
+  if(!AR||!AR.started||!AR.st||!AR.st.players||state==='arenadead')return;
+  const s=AR.st,left=Math.max(0,s.play_left-(performance.now()-AR.stAt)/1000);
+  ctx.save();ctx.textAlign='left';ctx.font='bold 14px system-ui';ctx.fillStyle='#fc3';ctx.shadowColor='#000';ctx.shadowBlur=4;
+  ctx.fillText('⏱ '+Math.floor(left/60)+':'+String(Math.floor(left%60)).padStart(2,'0')+'   👥 '+s.n+'   Sıran #'+s.rank,10,52);
+  ctx.font='12px system-ui';
+  s.players.slice(0,9).forEach((p,i)=>{ctx.fillStyle=p.me?'#4f8':(p.alive?'#fff':'#789');ctx.fillText('#'+p.rank+' '+p.name.slice(0,12)+' '+p.score+(p.alive?'':' ☠'),10,70+i*15)});
+  ctx.restore();
+}
+$('arbtn').onclick=arenaMenu;
+
 $('start').onclick=()=>start(false);
 $('again').onclick=()=>start(daily);
 $('tomenu').onclick=()=>{$('over').classList.add('hide');state='menu';showMenu()};
 reset();showMenu();
 if(loginMsg)setTimeout(()=>toast(loginMsg),400);
 requestAnimationFrame(loop);
-cloudSync();
+cloudSync().then(()=>checkPend());
 </script>
 </body>
 </html>
